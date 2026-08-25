@@ -26,6 +26,7 @@ internal sealed class Auction
 {
     public long ItemId { get; set; }
     public long TradeId { get; set; }
+    public string Kind { get; set; } = "player";   // player | cosmetic | consumable | staff
     public int StartingBid { get; set; }
     public int BuyNowPrice { get; set; }
     public int CurrentBid { get; set; }

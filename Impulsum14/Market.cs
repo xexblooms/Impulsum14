@@ -356,8 +356,8 @@ internal static class Market
 
 long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         long cur = Math.Min(cap, startBid + n * incr);
-        if (cur >= buyNow) return (true, buyNow, (int)Math.Min(n, 99), buyNow);  
-        return (true, cur, (int)Math.Min(n, 99), finalBid);
+        if (cur >= buyNow) return (true, buyNow, 0, buyNow);  
+        return (true, cur, 0, finalBid);
     }
 
     internal static long LiveTotal(long now)
@@ -461,8 +461,8 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         if (elapsed <= firstDelay) return (true, startBid, 0, finalBid);
         long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         long cur = Math.Min(cap, startBid + n * incr);
-        if (cur >= buyNow) return (true, buyNow, (int)Math.Min(n, 99), buyNow);   // Bot hits BIN -> buys it now
-        return (true, cur, (int)Math.Min(n, 99), finalBid);
+        if (cur >= buyNow) return (true, buyNow, 0, buyNow);   // Bot hits BIN -> buys it now
+        return (true, cur, 0, finalBid);
     }
 
     private static long CEffStart(long cg, long k, long dur, int s0, int buy)
@@ -533,7 +533,8 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
 
     internal static string ConsumablePageJson(int start, int num, long now, string cat, string lev,
         string pos = "", int playStyle = 0, int minBuyNow = 0, int maxBuyNow = 0,
-        int minCurrent = 0, int maxCurrent = 0, string sig = null, string wireType = "")
+        int minCurrent = 0, int maxCurrent = 0, string sig = null, string wireType = "",
+        long defId = 0)
     {
         if (start < 0) start = 0;
         num = Math.Clamp(num, 1, 60);
@@ -560,7 +561,8 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         }
         var mc = new List<int>();
         for (int i = 0; i < CCards.Length; i++)
-            if (ConsumableCatMatches(CCards[i].ItemType, cat, wireType) && TierOk(i) && StyleOk(i) && PosOk(i)) mc.Add(i);
+            if ((defId <= 0 || CCards[i].ResourceId == defId)
+                && ConsumableCatMatches(CCards[i].ItemType, cat, wireType) && TierOk(i) && StyleOk(i) && PosOk(i)) mc.Add(i);
         if (sig != null)
         {
             long[] gs = DomainMatches(now, sig, key, "C", mc, CPrefix, CCounts,
@@ -620,15 +622,15 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         if (live)
         {
             long remaining = cyc.dur - cyc.local;
-            var (_, sim, simOff, _) = CSimBids(CTier[ci], cg, cyc.k, cyc.dur, (int)effStart, buy, cyc.local);
+            var (_, sim, _, _) = CSimBids(CTier[ci], cg, cyc.k, cyc.dur, (int)effStart, buy, cyc.local);
             if (sim >= buy)
             {
-                currentBid = buy; offers = simOff;
+                currentBid = buy; offers = 0;
                 bidState = "none"; tradeState = "closed"; expiresOut = 0;   // bot BIN'd it
             }
             else
             {
-                currentBid = sim; offers = simOff; bidState = "none";
+                currentBid = sim; offers = 0; bidState = "none";
                 tradeState = "active";
                 expiresOut = remaining;
             }
@@ -641,7 +643,7 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         else
         {
             var (hasBids, _, _, _) = CSimBids(CTier[ci], cg, cyc.k, cyc.dur, (int)effStart, buy, cyc.dur);
-            currentBid = effStart; offers = hasBids ? 1 : 0;
+            currentBid = effStart; offers = 0;
             bidState = "none";
             tradeState = hasBids ? "closed" : "expired";
             expiresOut = 0;
@@ -652,7 +654,7 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         return "{\"tradeId\":" + tradeId + ",\"itemData\":" + item +
                ",\"tradeState\":\"" + tradeState + "\",\"buyNowPrice\":" + buy +
                ",\"currentBid\":" + currentBid + ",\"offers\":" + offers +
-               ",\"watched\":false" +
+               ",\"watched\":" + (Watched.ContainsKey(tradeId) ? "true" : "false") +
                ",\"bidState\":\"" + bidState + "\",\"startingBid\":" + effStart + ",\"confidenceValue\":100" +
                ",\"expires\":" + expiresOut +
                ",\"sellerName\":\"" + seller + "\",\"sellerEstablished\":2013," +
@@ -758,8 +760,8 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         if (elapsed <= firstDelay) return (true, startBid, 0, finalBid);
         long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         long cur = Math.Min(cap, startBid + n * incr);
-        if (cur >= buyNow) return (true, buyNow, (int)Math.Min(n, 99), buyNow);   // Bot hits BIN -> buys it now
-        return (true, cur, (int)Math.Min(n, 99), finalBid);
+        if (cur >= buyNow) return (true, buyNow, 0, buyNow);   // Bot hits BIN -> buys it now
+        return (true, cur, 0, finalBid);
     }
 
     private static long EEffStart(long eg, long k, long dur, int s0, int buy)
@@ -796,7 +798,7 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
 
     internal static string ClubItemPageJson(int start, int num, long now, string cat, string lev,
         int leag = 0, int team = 0, int minBuyNow = 0, int maxBuyNow = 0,
-        int minCurrent = 0, int maxCurrent = 0, string sig = null)
+        int minCurrent = 0, int maxCurrent = 0, string sig = null, long defId = 0)
     {
         if (start < 0) start = 0;
         num = Math.Clamp(num, 1, 60);
@@ -831,7 +833,8 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         long winStart = (scanFrom / Math.Max(1L, (long)num)) * block;
         var mc = new List<int>();
         for (int i = 0; i < ECards.Length; i++)
-            if (ClubItemCatMatches(ECards[i].Type, cat) && TierOk(i) && TeamOk(i) && LeagueOk(i)) mc.Add(i);
+            if ((defId <= 0 || ECards[i].ResourceId == defId || ECards[i].AssetId == defId)
+                && ClubItemCatMatches(ECards[i].Type, cat) && TierOk(i) && TeamOk(i) && LeagueOk(i)) mc.Add(i);
         if (sig != null)
         {
             long[] gs = DomainMatches(now, sig, key, "E", mc, EPrefix, ECounts,
@@ -891,15 +894,15 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         if (live)
         {
             long remaining = cyc.dur - cyc.local;
-            var (_, sim, simOff, _) = ESimBids(card.Rare, card.Rating, eg, cyc.k, cyc.dur, (int)effStart, buy, cyc.local);
+            var (_, sim, _, _) = ESimBids(card.Rare, card.Rating, eg, cyc.k, cyc.dur, (int)effStart, buy, cyc.local);
             if (sim >= buy)
             {
-                currentBid = buy; offers = simOff;
+                currentBid = buy; offers = 0;
                 bidState = "none"; tradeState = "closed"; expiresOut = 0;   // bot BIN'd it
             }
             else
             {
-                currentBid = sim; offers = simOff; bidState = "none";
+                currentBid = sim; offers = 0; bidState = "none";
                 tradeState = "active";
                 expiresOut = remaining;
             }
@@ -912,7 +915,7 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         else
         {
             var (hasBids, _, _, _) = ESimBids(card.Rare, card.Rating, eg, cyc.k, cyc.dur, (int)effStart, buy, cyc.dur);
-            currentBid = effStart; offers = hasBids ? 1 : 0;
+            currentBid = effStart; offers = 0;
             bidState = "none";
             tradeState = hasBids ? "closed" : "expired";
             expiresOut = 0;
@@ -923,7 +926,7 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         return "{\"tradeId\":" + tradeId + ",\"itemData\":" + item +
                ",\"tradeState\":\"" + tradeState + "\",\"buyNowPrice\":" + buy +
                ",\"currentBid\":" + currentBid + ",\"offers\":" + offers +
-               ",\"watched\":false" +
+               ",\"watched\":" + (Watched.ContainsKey(tradeId) ? "true" : "false") +
                ",\"bidState\":\"" + bidState + "\",\"startingBid\":" + effStart + ",\"confidenceValue\":100" +
                ",\"expires\":" + expiresOut +
                ",\"sellerName\":\"" + seller + "\",\"sellerEstablished\":2013," +
@@ -1029,8 +1032,8 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         if (elapsed <= firstDelay) return (true, startBid, 0, finalBid);
         long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         long cur = Math.Min(cap, startBid + n * incr);
-        if (cur >= buyNow) return (true, buyNow, (int)Math.Min(n, 99), buyNow);   // Bot hits BIN -> buys it now
-        return (true, cur, (int)Math.Min(n, 99), finalBid);
+        if (cur >= buyNow) return (true, buyNow, 0, buyNow);   // Bot hits BIN -> buys it now
+        return (true, cur, 0, finalBid);
     }
 
     private static long FEffStart(long fg, long k, long dur, int s0, int buy)
@@ -1076,7 +1079,7 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
 
     internal static string StaffPageJson(int start, int num, long now, string cat, string lev,
         int nat = 0, int leag = 0, int minBuyNow = 0, int maxBuyNow = 0,
-        int minCurrent = 0, int maxCurrent = 0, string sig = null)
+        int minCurrent = 0, int maxCurrent = 0, string sig = null, long defId = 0)
     {
         if (start < 0) start = 0;
         num = Math.Clamp(num, 1, 60);
@@ -1100,7 +1103,8 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
 
         var mc = new List<int>();
         for (int i = 0; i < FIsManager.Length; i++)
-            if (StaffCatMatches(FIsManager[i], FStaff[i], cat) && TierOk(i) && NationOk(i) && LeagueOk(i)) mc.Add(i);
+            if ((defId <= 0 || (FIsManager[i] ? FManager[i].ResourceId : FStaff[i].ResourceId) == defId)
+                && StaffCatMatches(FIsManager[i], FStaff[i], cat) && TierOk(i) && NationOk(i) && LeagueOk(i)) mc.Add(i);
         if (sig != null)
         {
             long[] gs = DomainMatches(now, sig, key, "F", mc, FPrefix, FCounts,
@@ -1161,15 +1165,15 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         if (live)
         {
             long remaining = cyc.dur - cyc.local;
-            var (_, sim, simOff, _) = FSimBids(rating, FIsManager[ci], fg, cyc.k, cyc.dur, (int)effStart, buy, cyc.local);
+            var (_, sim, _, _) = FSimBids(rating, FIsManager[ci], fg, cyc.k, cyc.dur, (int)effStart, buy, cyc.local);
             if (sim >= buy)
             {
-                currentBid = buy; offers = simOff;
+                currentBid = buy; offers = 0;
                 bidState = "none"; tradeState = "closed"; expiresOut = 0;   // bot BIN'd it
             }
             else
             {
-                currentBid = sim; offers = simOff; bidState = "none";
+                currentBid = sim; offers = 0; bidState = "none";
                 tradeState = "active";
                 expiresOut = remaining;
             }
@@ -1182,7 +1186,7 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         else
         {
             var (hasBids, _, _, _) = FSimBids(rating, FIsManager[ci], fg, cyc.k, cyc.dur, (int)effStart, buy, cyc.dur);
-            currentBid = effStart; offers = hasBids ? 1 : 0;
+            currentBid = effStart; offers = 0;
             bidState = "none";
             tradeState = hasBids ? "closed" : "expired";
             expiresOut = 0;
@@ -1203,7 +1207,7 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         return "{\"tradeId\":" + tradeId + ",\"itemData\":" + item +
                ",\"tradeState\":\"" + tradeState + "\",\"buyNowPrice\":" + buy +
                ",\"currentBid\":" + currentBid + ",\"offers\":" + offers +
-               ",\"watched\":false" +
+               ",\"watched\":" + (Watched.ContainsKey(tradeId) ? "true" : "false") +
                ",\"bidState\":\"" + bidState + "\",\"startingBid\":" + effStart + ",\"confidenceValue\":100" +
                ",\"expires\":" + expiresOut +
                ",\"sellerName\":\"" + seller + "\",\"sellerEstablished\":2013," +
@@ -1515,10 +1519,10 @@ internal static (long CurrentBid, int Offers, string BidState) AuctionState(long
         var card = Cards[Locate(g)];
         var (start, buy) = Price(card, g, cyc.k);
         long eff = EffStart(card, g, cyc.k, cyc.dur, start, buy);
-        var (_, sim, simOff, _) = SimBids(card, g, cyc.k, cyc.dur, (int)eff, buy, cyc.local);
+        var (_, sim, _, _) = SimBids(card, g, cyc.k, cyc.dur, (int)eff, buy, cyc.local);
         long myBid = MyBids.TryGetValue(tradeId, out long mb) ? mb : 0;
-        int offers = simOff + (myBid > 0 ? 1 : 0);
-        if (AcceptedOffers.TryGetValue(tradeId, out var accOff)) return (accOff.Bid, simOff + 1, "highest");
+        int offers = AcceptedOffers.ContainsKey(tradeId) ? 1 : 0;
+        if (AcceptedOffers.TryGetValue(tradeId, out var accOff)) return (accOff.Bid, offers, "highest");
         if (myBid > 0 && myBid >= sim) return (myBid, offers, "highest");
         if (myBid > 0) return (sim, offers, "outbid");
         return (sim, offers, "none");
@@ -2238,20 +2242,20 @@ internal static (long CurrentBid, int Offers, string BidState) AuctionState(long
         if (live)
         {
             long remaining = cyc.dur - cyc.local;
-            var (_, sim, simOff, _) = SimBids(card, g, cyc.k, cyc.dur, (int)effStart, buy, cyc.local);
+            var (_, sim, _, _) = SimBids(card, g, cyc.k, cyc.dur, (int)effStart, buy, cyc.local);
             if (offerPending)
             {
-                currentBid = myBid; offers = simOff + 1;
+                currentBid = myBid; offers = 1;
                 bidState = "highest"; tradeState = "active"; expiresOut = remaining;   // seller accepted your offer
             }
             else if (sim >= buy)
             {
-                currentBid = buy; offers = simOff + (myBid > 0 ? 1 : 0);
+                currentBid = buy; offers = 0;
                 bidState = "none"; tradeState = "closed"; expiresOut = 0;   // bot BIN'd it
             }
             else
             {
-                offers = simOff + (myBid > 0 ? 1 : 0);
+                offers = 0;
                 if (myBid > 0 && myBid >= sim) { currentBid = myBid; bidState = "highest"; }
                 else { currentBid = sim; bidState = myBid > 0 ? "outbid" : "none"; }
                 tradeState = "active";
@@ -2262,8 +2266,8 @@ internal static (long CurrentBid, int Offers, string BidState) AuctionState(long
         {
             if (offerPending)
             {
-                var (_, _, simOff2, _) = SimBids(card, g, cyc.k, cyc.dur, (int)effStart, buy, cyc.dur);
-                currentBid = myOffer.Bid; offers = simOff2 + 1; bidState = "highest";
+                var (_, _, _, _) = SimBids(card, g, cyc.k, cyc.dur, (int)effStart, buy, cyc.dur);
+                currentBid = myOffer.Bid; offers = 1; bidState = "highest";
                 tradeState = "closed"; expiresOut = 0;   // accepted offer settled - reads as a won purchase
             }
             else
@@ -2276,7 +2280,7 @@ internal static (long CurrentBid, int Offers, string BidState) AuctionState(long
         {
             var (hasBids, _, _, _) = SimBids(card, g, cyc.k, cyc.dur, (int)effStart, buy, cyc.dur);
             currentBid = Math.Max(myBid, effStart);
-            offers = (hasBids ? 1 : 0) + (myBid > 0 ? 1 : 0);
+            offers = 0;
             bidState = "none";
             tradeState = hasBids || myBid > 0 ? "closed" : "expired";
             expiresOut = 0;
@@ -2416,6 +2420,58 @@ internal static (long CurrentBid, int Offers, string BidState) AuctionState(long
         long result = min == long.MaxValue ? 0 : min;
         CheapCache[card.CardId] = (result, now);
         return result;
+    }
+
+    internal static long ConsumableFloor(long resourceId, long now)
+    {
+        long min = long.MaxValue;
+        for (int i = 0; i < CCards.Length; i++)
+        {
+            if (CCards[i].ResourceId != resourceId) continue;
+            for (long cg = CPrefix[i]; cg < CPrefix[i + 1]; cg++)
+            {
+                if (!LiveConsumableAt(cg, now) || CBoughtThisCycle(cg, now) || CSimBinnedThisCycle(cg, now)) continue;
+                var cyc = CCycle(cg, now);
+                var (_, buy) = CPrice(cg, cyc.k);
+                if (buy < min) min = buy;
+            }
+        }
+        return min == long.MaxValue ? 0 : min;
+    }
+
+    internal static long CosmeticFloor(int assetId, long resourceId, long now)
+    {
+        long min = long.MaxValue;
+        for (int i = 0; i < ECards.Length; i++)
+        {
+            if (ECards[i].AssetId != assetId && ECards[i].ResourceId != resourceId) continue;
+            for (long eg = EPrefix[i]; eg < EPrefix[i + 1]; eg++)
+            {
+                if (!LiveClubItemAt(eg, now) || EBoughtThisCycle(eg, now) || ESimBinnedThisCycle(eg, now)) continue;
+                var cyc = ECycle(eg, now);
+                var (_, buy) = EPrice(eg, cyc.k);
+                if (buy < min) min = buy;
+            }
+        }
+        return min == long.MaxValue ? 0 : min;
+    }
+
+    internal static long StaffFloor(long resourceId, long now)
+    {
+        long min = long.MaxValue;
+        for (int i = 0; i < FIsManager.Length; i++)
+        {
+            long rid = FIsManager[i] ? FManager[i].ResourceId : FStaff[i].ResourceId;
+            if (rid != resourceId) continue;
+            for (long fs = FPrefix[i]; fs < FPrefix[i + 1]; fs++)
+            {
+                if (!LiveStaffAt(fs, now) || FBoughtThisCycle(fs, now) || FSimBinnedThisCycle(fs, now)) continue;
+                var cyc = FCycle(fs, now);
+                var (_, buy) = FPrice(fs, cyc.k);
+                if (buy < min) min = buy;
+            }
+        }
+        return min == long.MaxValue ? 0 : min;
     }
 
     internal static long MarketValue(RealPlayer card) => BasePrice(card);   // fallback when no live comps
