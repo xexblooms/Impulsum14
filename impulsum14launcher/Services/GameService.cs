@@ -159,47 +159,38 @@ public class GameService
             return result;
         }
 
+        var exePath = GetGameExePath(gamePath);
+        if (!File.Exists(exePath))
+        {
+            result.Success = false;
+            result.ErrorMessage = "fifa14.exe was not found at " + exePath;
+            return result;
+        }
+
         try
         {
-            var configPath = Path.Combine(gamePath, ConfigExe);
-            if (!File.Exists(configPath))
+            using var gameProcess = Process.Start(new ProcessStartInfo
+            {
+                FileName = exePath,
+                WorkingDirectory = gamePath,
+                UseShellExecute = true,
+                Verb = "open",
+            });
+
+            if (gameProcess == null)
             {
                 result.Success = false;
-                result.ErrorMessage = "FIFA configuration executable not found at " + configPath;
+                result.ErrorMessage = "Failed to start fifa14.exe.";
                 return result;
             }
 
-            using (var configProcess = Process.Start(new ProcessStartInfo
-            {
-                FileName = configPath,
-                WorkingDirectory = Path.GetDirectoryName(configPath)!,
-                UseShellExecute = true,
-                Verb = "open",
-            }))
-            {
-                if (configProcess == null)
-                {
-                    result.Success = false;
-                    result.ErrorMessage = "Failed to start FIFA configuration.";
-                    return result;
-                }
+            result.Success = true;
+            result.ProcessId = gameProcess.Id;
 
-                while (!configProcess.HasExited)
-                {
-                    var gameProcess = FindGameProcess(gamePath);
-                    if (gameProcess != null)
-                    {
-                        result.Success = true;
-                        result.ProcessId = gameProcess.Id;
-                        return result;
-                    }
-
-                    await Task.Delay(250);
-                }
+            while (!gameProcess.HasExited)
+            {
+                await Task.Delay(250);
             }
-
-            result.Success = false;
-            result.ErrorMessage = "FIFA configuration closed without starting fifa14.exe.";
         }
         catch (Exception ex)
         {
