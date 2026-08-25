@@ -70,6 +70,14 @@ internal sealed class SavedTournament
     public bool Won { get; set; } = false;         
 }
 
+internal sealed class MarketOfferState
+{
+    public long Bid { get; set; }
+    public long OfferedItemId { get; set; }
+    public long AcceptAtUnix { get; set; }
+    public long SettledAt { get; set; }
+}
+
 internal sealed class FutProfile
 {
     public long NucleusId { get; set; } = 1000;
@@ -89,6 +97,13 @@ internal sealed class FutProfile
     // In-progress offline tournaments, keyed by tournament id -> the client's saved bracket state.
     public Dictionary<int, SavedTournament> SavedTournaments { get; set; } = new();
     public Dictionary<int, int> PacksSinceSpecial { get; set; } = new();
+
+    public long MarketHeldCoins { get; set; } = 0;
+    public Dictionary<long, long> MarketMyBids { get; set; } = new();            // tradeId -> bid amount
+    public List<long> MarketWatched { get; set; } = new();                         // transfer target tradeIds
+    public Dictionary<long, MarketOfferState> MarketAcceptedOffers { get; set; } = new();
+    public List<long> MarketRefundedBids { get; set; } = new();
+    public Dictionary<long, long> MarketBoughtAt { get; set; } = new();           // market index g -> cycle k
 }
 
 internal static class FutProfileStore
@@ -150,6 +165,7 @@ internal static class FutProfileStore
     {
         try
         {
+            Market.SnapshotInto(_profile);   // keep watchlist/bids/escrow across restarts
             Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
             File.WriteAllText(_path, JsonSerializer.Serialize(_profile, new JsonSerializerOptions { WriteIndented = true }));
         }

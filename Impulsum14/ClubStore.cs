@@ -17,9 +17,17 @@ internal sealed class ClubData
     public int StaffVersion { get; set; } = 0;
     public int ConsumablesVersion { get; set; } = 0;
     public Dictionary<long, PlayerMod> PlayerMods { get; set; } = new();
+    public Dictionary<long, ManagerMod> ManagerMods { get; set; } = new();
     public Dictionary<long, Auction> Listings { get; set; } = new();
+    public HashSet<long> TransferList { get; set; } = new();   // non-player items on the transfer list (not yet priced/listed)
     public long TradeIdSeq { get; set; } = 1_000_000_000;
     public long MarketBuySeq { get; set; } = 850_000_000;
+}
+
+internal sealed class ManagerMod
+{
+    public int Contract { get; set; } = -1;      // remaining contracts, -1 = default (7)
+    public int LeagueModifier { get; set; } = -1;  // league id applied by a manager league-modifier item, -1 = the manager's own league
 }
 
 internal sealed class Auction
@@ -433,7 +441,9 @@ internal static class ClubStore
             _data.StaffVersion = 0;
             _data.ConsumablesVersion = 0;
             _data.PlayerMods.Clear();
+            _data.ManagerMods.Clear();
             _data.Listings.Clear();
+            _data.TransferList.Clear();
             _data.TradeIdSeq = 1_000_000_000;
             _data.MarketBuySeq = 850_000_000;
             Save();

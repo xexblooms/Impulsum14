@@ -216,6 +216,63 @@ internal static class Market
             STotal = fAcc;
             SHalfBits = HalfBitsFor(STotal);
         }
+
+        LoadState();
+    }
+
+    internal static void SnapshotInto(FutProfile p)
+    {
+        p.MarketHeldCoins = HeldCoins;
+        p.MarketMyBids = new Dictionary<long, long>(MyBids);
+        p.MarketWatched = Watched.Keys.ToList();
+        p.MarketAcceptedOffers = AcceptedOffers.ToDictionary(
+            kv => kv.Key,
+            kv => new MarketOfferState
+            {
+                Bid = kv.Value.Bid,
+                OfferedItemId = kv.Value.OfferedItemId,
+                AcceptAtUnix = kv.Value.AcceptAtUnix,
+                SettledAt = kv.Value.SettledAt,
+            });
+        p.MarketRefundedBids = RefundedBids.Keys.ToList();
+        p.MarketBoughtAt = new Dictionary<long, long>(BoughtAt);
+    }
+
+    internal static void ClearAll()
+    {
+        MyBids.Clear();
+        Watched.Clear();
+        AcceptedOffers.Clear();
+        RefundedBids.Clear();
+        BoughtAt.Clear();
+        HeldCoins = 0;
+    }
+
+    private static void LoadState()
+    {
+        try
+        {
+            var p = FutProfileStore.Get();
+            HeldCoins = Math.Max(0, p.MarketHeldCoins);
+            foreach (var kv in p.MarketMyBids)
+                if (kv.Key >= TradeIdBase) MyBids[kv.Key] = kv.Value;
+            foreach (long tid in p.MarketWatched)
+                if (tid >= TradeIdBase) Watched.TryAdd(tid, 0);
+            foreach (var kv in p.MarketAcceptedOffers)
+            {
+                if (kv.Key < TradeIdBase || kv.Value == null) continue;
+                AcceptedOffers[kv.Key] = new PendingOffer(kv.Value.Bid, kv.Value.OfferedItemId,
+                    kv.Value.AcceptAtUnix, kv.Value.SettledAt);
+            }
+            foreach (long tid in p.MarketRefundedBids)
+                if (tid >= TradeIdBase) RefundedBids.TryAdd(tid, 0);
+            foreach (var kv in p.MarketBoughtAt)
+                if (kv.Key >= 0) BoughtAt[kv.Key] = kv.Value;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Market] failed to restore market state: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     private static long ConsumableBasePrice(ConsumableItem c, int tier)
@@ -1193,16 +1250,14 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         }
 
         string seller = SellerFor(fg, cyc.k);
-        int mgrLeague = -1, mgrContract = 7;
+        int mgrContract = 7;
         if (FIsManager[ci])
         {
             uint mr = Hash((uint)fg, (uint)(cyc.k * 0x9E3779B1u)) ^ 0x2F6E2B57u;
-            if (mr % 100 >= 78 && TeamLeagues.AllLeagues.Length > 0)   // ~22% of listed managers carry a league modifier
-                mgrLeague = TeamLeagues.AllLeagues[(int)((mr >> 7) % (uint)TeamLeagues.AllLeagues.Length)];
             if ((mr >> 14) % 100 >= 45) mgrContract = (int)((mr >> 21) % 7);   // ~55% worn contracts, 0 = out of contract
         }
         string item = FIsManager[ci]
-            ? WebServer.BuildManagerItem(FManager[ci], itemId, now, 5, rareFlag, "forSale", mgrLeague, mgrContract)
+            ? WebServer.BuildManagerItem(FManager[ci], itemId, now, 5, rareFlag, "forSale", -1, mgrContract)
             : WebServer.BuildStaffItem(FStaff[ci], itemId, now, 5, "forSale");
         return "{\"tradeId\":" + tradeId + ",\"itemData\":" + item +
                ",\"tradeState\":\"" + tradeState + "\",\"buyNowPrice\":" + buy +
@@ -1988,6 +2043,24 @@ internal static (long CurrentBid, int Offers, string BidState) AuctionState(long
             if (playStyle > 0 && sig != null)
             {
                 long[] gs = StyleFilterMatches(now, sig, key, minBuyNow, maxBuyNow, minCurrent, maxCurrent, playStyle, wantPos);
+                int from = start < gs.Length ? start : gs.Length;
+                for (int w = from; written < num && w < gs.Length; w++)
+                {
+                    long g = gs[w];
+                    if (!LiveAt(g, now) || BoughtThisCycle(g, now) || SimBinnedThisCycle(g, now)) continue;
+                    int i = Locate(g);
+                    RealPlayer c = Cards[i];
+                    if (!StyleOkFor(c, g, now, playStyle)) continue;
+                    if (!PosOkNow(c, g, now, wantPos)) continue;
+                    if (!ByPrice(c, g, now, minBuyNow, maxBuyNow, minCurrent, maxCurrent)) continue;
+                    if (written > 0) sb.Append(',');
+                    sb.Append(Entry(c, g, now, rnd));
+                    written++;
+                }
+            }
+            else if (sig != null && filtered)
+            {
+                long[] gs = ViewMatches(now, sig, key, _ => true, minBuyNow, maxBuyNow, minCurrent, maxCurrent, playStyle, wantPos);
                 int from = start < gs.Length ? start : gs.Length;
                 for (int w = from; written < num && w < gs.Length; w++)
                 {

@@ -573,7 +573,9 @@ internal sealed class WebServer
             long liveListings = Market.LiveTotal(hubNow);
             var hubClub = ClubStore.Get();
             int clubPlayers = hubClub.Inventory.Count;
-            int tradePileCount = hubClub.Inventory.Count(c => c.Pile == 3);
+            int tradePileCount = hubClub.Inventory.Count(c => c.Pile == 3)
+                + hubClub.TransferList.Count
+                + hubClub.Listings.Values.Count(au => au.Kind != "player");
             int tradeSelling = hubClub.Listings.Values.Count(au => au.State == "active");
             int tradeSold = hubClub.Listings.Values.Count(au => au.State == "sold");
             int tradeNotification = tradeSold + wl.Outbid;
@@ -727,18 +729,19 @@ internal sealed class WebServer
                         }
                         else
                         {
-                            long mgrIdx = auctionItemId - ManagerItemIdBase;
-                            if (mgrIdx >= 0 && mgrIdx < data.Managers.Count)
+                            if (ManagerByGlobalId(auctionItemId) is { } mgr && data.Managers.Contains(mgr))
                             {
                                 owned = true; kind = "staff";
-                                floor = Market.StaffFloor(data.Managers[(int)mgrIdx].ResourceId, ahNow);
+                                floor = Market.StaffFloor(mgr.ResourceId, ahNow);
                             }
                             else
                             {
-                                long stfIdx = auctionItemId - StaffItemIdBase;
-                                if (stfIdx < 0 || stfIdx >= data.Staff.Count) return;   // can only list something you own
-                                owned = true; kind = "staff";
-                                floor = Market.StaffFloor(data.Staff[(int)stfIdx].ResourceId, ahNow);
+                                if (StaffByGlobalId(auctionItemId) is { } stf && data.Staff.Contains(stf))
+                                {
+                                    owned = true; kind = "staff";
+                                    floor = Market.StaffFloor(stf.ResourceId, ahNow);
+                                }
+                                else return;   // can only list something you own
                             }
                         }
                     }
@@ -748,6 +751,7 @@ internal sealed class WebServer
                     ? existing.TradeId : data.TradeIdSeq++;
                 int effPrice = buyNowPrice > 0 ? buyNowPrice : startingBid;
                 long sellDelay = Market.UserSaleDelay(effPrice, floor, new Random());
+                data.TransferList.Remove(auctionItemId);   // priced/listed -> no longer just "on the transfer list"
                 data.Listings[auctionItemId] = new Auction
                 {
                     ItemId = auctionItemId,
@@ -817,7 +821,7 @@ internal sealed class WebServer
                 string entry = null;
                 if (byTrade.TryGetValue(want, out var au))
                 {
-                    entry = TradePileEntryJson(au, tsNow, tsRnd);
+                    entry = TradePileEntryJson(au.ItemId, au, tsNow, tsRnd);
                 }
                 else if (want >= Market.TradeIdBase)   // a listing from the simulated market
                 {
@@ -869,6 +873,7 @@ internal sealed class WebServer
                     Market.Watched.TryRemove(tid, out _);
                     _log.LogInformation("[Market] WATCH trade {0} removed from transfer targets", tid);
                 }
+                FutProfileStore.Mutate(_ => { });   // persist watchlist across restarts
             }
             return ("application/json; charset=utf-8", "{}");
         }
@@ -912,9 +917,21 @@ internal sealed class WebServer
             long tpNow = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var tpSb = new StringBuilder("[");
             int tpWritten = 0;
-            foreach (var au in tpData.Listings.Values)
+            foreach (var it in tpData.Inventory.Where(c => c.Pile == 3))
             {
-                string entry = TradePileEntryJson(au, tpNow, tpRnd);
+                tpData.Listings.TryGetValue(it.ItemId, out var auP);
+                string entry = TradePileEntryJson(it.ItemId, auP, tpNow, tpRnd);
+                if (entry == null) continue;
+                if (tpWritten++ > 0) tpSb.Append(',');
+                tpSb.Append(entry);
+            }
+            var npIds = new HashSet<long>(tpData.TransferList);
+            foreach (var au in tpData.Listings.Values)
+                if (au.Kind != "player") npIds.Add(au.ItemId);
+            foreach (long npId in npIds)
+            {
+                tpData.Listings.TryGetValue(npId, out var auN);
+                string entry = TradePileEntryJson(npId, auN, tpNow, tpRnd);
                 if (entry == null) continue;
                 if (tpWritten++ > 0) tpSb.Append(',');
                 tpSb.Append(entry);
@@ -938,6 +955,7 @@ internal sealed class WebServer
                     {
                         bool sold = kv.Value.State == "sold";
                         data.Listings.Remove(kv.Key);
+                        data.TransferList.Remove(kv.Key);
                         switch (kv.Value.Kind)
                         {
                             case "player":
@@ -958,16 +976,15 @@ internal sealed class WebServer
                                 break;
                             case "staff":
                             {
-                                long mgrIdx = kv.Key - ManagerItemIdBase;
-                                if (mgrIdx >= 0 && mgrIdx < data.Managers.Count)
+                                if (ManagerByGlobalId(kv.Key) is { } dmgr)
                                 {
-                                    if (sold) data.Managers.RemoveAt((int)mgrIdx);
+                                    int clubIdx = data.Managers.IndexOf(dmgr);
+                                    if (clubIdx >= 0 && sold) data.Managers.RemoveAt(clubIdx);
                                 }
-                                else
+                                else if (StaffByGlobalId(kv.Key) is { } dstf)
                                 {
-                                    long stfIdx = kv.Key - StaffItemIdBase;
-                                    if (stfIdx >= 0 && stfIdx < data.Staff.Count && sold)
-                                        data.Staff.RemoveAt((int)stfIdx);
+                                    int clubIdx = data.Staff.IndexOf(dstf);
+                                    if (clubIdx >= 0 && sold) data.Staff.RemoveAt(clubIdx);
                                 }
                                 break;
                             }
@@ -1038,7 +1055,7 @@ internal sealed class WebServer
                 int cosmeticsTeam = int.TryParse(req.QueryString["team"], out int ctm) ? ctm : -1;
                 var cosData = ClubStore.Get();
                 var cosmeticsPage = cosData.Cosmetics
-                    .Where(c => !cosData.Listings.ContainsKey(c.ItemId))
+                    .Where(c => !cosData.Listings.ContainsKey(c.ItemId) && !cosData.TransferList.Contains(c.ItemId))
                     .Where(c => typeFilter == "equippables" || c.Type == typeFilter)
                     .Where(c => cosmeticsLevel switch
                     {
@@ -1266,7 +1283,7 @@ internal sealed class WebServer
                 }
                 long useResource = data0.Consumables[owned].ResourceId;
                 long usedItemId = data0.Consumables[owned].ItemId;
-                if (data0.Listings.ContainsKey(usedItemId))
+                if (data0.Listings.ContainsKey(usedItemId) || data0.TransferList.Contains(usedItemId))
                 {
                     Console.WriteLine($"[FUT] consumable apply: item {usedItemId} is on the transfer list - ignoring");
                     return ("application/json; charset=utf-8",
@@ -1349,7 +1366,7 @@ internal sealed class WebServer
                     }
                 }
             }
-            if (equip.ItemId != 0 && data1.Listings.ContainsKey(equip.ItemId))
+            if (equip.ItemId != 0 && (data1.Listings.ContainsKey(equip.ItemId) || data1.TransferList.Contains(equip.ItemId)))
             {
                 Console.WriteLine($"[FUT] club item apply: id {itemPathNum} is on the transfer list - ignoring");
                 return ("application/json; charset=utf-8",
@@ -1584,8 +1601,16 @@ internal sealed class WebServer
                         int want = pileName switch { "club" => 6, "trade" => 3, _ => 0 };
                         if (want == 0) continue;
                         int idx = data.Inventory.FindIndex(c => c.ItemId == id);
-                        if (idx >= 0 && data.Inventory[idx].Pile != want)
-                            data.Inventory[idx] = new ClubItem(id, data.Inventory[idx].Player, want);
+                        if (idx >= 0)
+                        {
+                            if (data.Inventory[idx].Pile != want)
+                                data.Inventory[idx] = new ClubItem(id, data.Inventory[idx].Player, want);
+                        }
+                        else if (IsClubItem(data, id))
+                        {
+                            if (want == 3) data.TransferList.Add(id);
+                            else { data.TransferList.Remove(id); data.Listings.Remove(id); }
+                        }
                         if (want != 3) data.Listings.Remove(id);   // left the transfer list -> drop any listing
                     }
                 });
@@ -1821,6 +1846,13 @@ internal sealed class WebServer
                         target.Name = nameEl.GetString() ?? target.Name;
                     if (root.TryGetProperty("formation", out var formEl) && formEl.ValueKind == System.Text.Json.JsonValueKind.String)
                         target.Formation = formEl.GetString() ?? target.Formation;
+                    if (root.TryGetProperty("manager", out var mgrEl) && mgrEl.ValueKind == System.Text.Json.JsonValueKind.Array)
+                        foreach (var mEl in mgrEl.EnumerateArray())
+                        {
+                            if (mEl.TryGetProperty("id", out var mgrIdEl)
+                                && mgrIdEl.ValueKind == System.Text.Json.JsonValueKind.Number)
+                            { target.ManagerId = mgrIdEl.GetInt64(); break; }
+                        }
                     if (root.TryGetProperty("chemistry", out var chemEl) && chemEl.ValueKind == System.Text.Json.JsonValueKind.Number)
                         target.Chemistry = chemEl.GetInt32();
                     if (root.TryGetProperty("starRating", out var starEl) && starEl.ValueKind == System.Text.Json.JsonValueKind.Number)
@@ -1828,6 +1860,7 @@ internal sealed class WebServer
                     if (root.TryGetProperty("players", out var playersEl) && playersEl.ValueKind == System.Text.Json.JsonValueKind.Array)
                     {
                         var newSlots = new Dictionary<int, long>();
+                        var newKits = new Dictionary<int, int>();
                         foreach (var pl in playersEl.EnumerateArray())
                         {
                             if (!pl.TryGetProperty("index", out var idxEl)) continue;
@@ -1836,6 +1869,9 @@ internal sealed class WebServer
                             long slotItemId = idEl.GetInt64();
                             if (slotItemId != 0 && data.Inventory.Any(c => c.ItemId == slotItemId))
                                 newSlots[idxEl.GetInt32()] = slotItemId;
+                            if (pl.TryGetProperty("kitNumber", out var kitEl)
+                                && kitEl.ValueKind == System.Text.Json.JsonValueKind.Number)
+                                newKits[idxEl.GetInt32()] = kitEl.GetInt32();
                         }
                         if (newSlots.Count > 0)
                         {
@@ -1849,6 +1885,7 @@ internal sealed class WebServer
                             target.Slots.Clear();
                             foreach (var kv in newSlots) target.Slots[kv.Key] = kv.Value;
                         }
+                        target.KitNumbers = newKits;
                     }
                 }
                 catch (Exception ex)
@@ -2137,7 +2174,8 @@ internal sealed class WebServer
     {
         FutProfileStore.Reset();
         ClubStore.Wipe();
-        Market.MyBids.Clear();
+        Market.ClearAll();
+        FutProfileStore.Mutate(_ => { });   // persist the cleared market state
         ClientDataStore.Clear();
         Tournaments.CurrentMatchTournamentId = null;
         _log.LogInformation("[FUT] club deleted -> account reset to new player");
@@ -2318,6 +2356,7 @@ internal sealed class WebServer
                         ",\"currencies\":" + CurrenciesJson(coins) + ",\"bidTokens\":{}}");
                 }
                 Market.AcceptedOffers[tradeId] = new Market.PendingOffer(amount, offeredItemId, now + acceptIn);
+                FutProfileStore.Mutate(_ => { });   // persist the pending offer across restarts
                 var opt = Market.AuctionState(tradeId, now);
                 string offerAuc = "{\"tradeId\":" + tradeId + ",\"itemData\":" +
                     BuildRealPlayerItem(rnd, card, 3_000_000_000L + (tradeId - 2_000_000_000L), now, 0) +
@@ -2385,6 +2424,7 @@ internal sealed class WebServer
             Market.Watched.TryRemove(tradeId, out _);
             Market.MyBids.TryRemove(tradeId, out _);
             Market.AcceptedOffers.TryRemove(tradeId, out _);
+            FutProfileStore.Mutate(_ => { });   // persist the buy-now cleanup across restarts
             _log.LogInformation("[Market] BUY-NOW asset {0} (rating {1}) for {2} -> club item {3}, balance {4}{5}",
                 card.Id, card.Rating, buyNow, itemId, coins, dupes.Count > 0 ? " (duplicate)" : "");
         }
@@ -2645,19 +2685,46 @@ internal sealed class WebServer
             _log.LogInformation("[Market] WON auction {0}: {1} (rating {2}) for {3} coins -> club item {4}{5}",
                 r.TradeId, r.Card.Name, r.Card.Rating, r.MyBid, itemId, winDupes.Count > 0 ? " (duplicate)" : "");
         }
+        FutProfileStore.Mutate(_ => { });   // persist bid settlement so a restart can't re-settle
     }
 
     private void ReconcileBids(long now)
     {
+        bool any = false;
         foreach (long tid in Market.CollectRefundableBids(now))
         {
             long esc = Market.RefundEscrow(tid);
             if (esc > 0)
             {
+                any = true;
                 FutProfileStore.Mutate(p => p.Coins += esc);
                 _log.LogInformation("[Market] bid on trade {0} lost - {1} coins returned", tid, esc);
             }
         }
+        if (any) FutProfileStore.Mutate(_ => { });   // persist refunds so a restart can't double-refund
+    }
+
+    private static Manager? ManagerByGlobalId(long id)
+    {
+        long idx = id - ManagerItemIdBase;
+        if (idx >= 0 && idx < Managers.All.Length) return Managers.All[(int)idx];
+        return null;
+    }
+
+    private static StaffCard? StaffByGlobalId(long id)
+    {
+        long idx = id - StaffItemIdBase;
+        if (idx >= 0 && idx < Staff.All.Length) return Staff.All[(int)idx];
+        return null;
+    }
+
+    private static bool IsClubItem(ClubData data, long id)
+    {
+        if (data.Cosmetics.Any(c => c.ItemId == id)) return true;
+        if (data.Consumables.Any(c => c.ItemId == id)) return true;
+        if (ManagerByGlobalId(id) is { } mgr && data.Managers.Contains(mgr)) return true;
+        if (StaffByGlobalId(id) is { } stf && data.Staff.Contains(stf)) return true;
+        return false;
     }
 
     private static string ListedItemName(ClubData data, Auction au)
@@ -2681,10 +2748,8 @@ internal sealed class WebServer
             }
             case "staff":
             {
-                long mgrIdx = au.ItemId - ManagerItemIdBase;
-                if (mgrIdx >= 0 && mgrIdx < data.Managers.Count) return data.Managers[(int)mgrIdx].Name;
-                long stfIdx = au.ItemId - StaffItemIdBase;
-                if (stfIdx >= 0 && stfIdx < data.Staff.Count) return data.Staff[(int)stfIdx].Name;
+                if (ManagerByGlobalId(au.ItemId) is { } mgr && data.Managers.Contains(mgr)) return mgr.Name;
+                if (StaffByGlobalId(au.ItemId) is { } stf && data.Staff.Contains(stf)) return stf.Name;
                 return "item " + au.ItemId;
             }
             default: return "item " + au.ItemId;
@@ -2707,10 +2772,8 @@ internal sealed class WebServer
             }
             case "staff":
             {
-                long mgrIdx = au.ItemId - ManagerItemIdBase;
-                if (mgrIdx >= 0 && mgrIdx < data.Managers.Count) return data.Managers[(int)mgrIdx].Rating;
-                long stfIdx = au.ItemId - StaffItemIdBase;
-                if (stfIdx >= 0 && stfIdx < data.Staff.Count) return data.Staff[(int)stfIdx].Rating;
+                if (ManagerByGlobalId(au.ItemId) is { } mgr && data.Managers.Contains(mgr)) return mgr.Rating;
+                if (StaffByGlobalId(au.ItemId) is { } stf && data.Staff.Contains(stf)) return stf.Rating;
                 return 0;
             }
             default: return 0;
@@ -2787,6 +2850,7 @@ internal sealed class WebServer
                 }
                 au.State = "expired";
                 data.Listings.Remove(kv.Key);
+                data.TransferList.Remove(kv.Key);
                 string name; int rating;
                 if (au.Kind == "player")
                 {
@@ -2832,6 +2896,7 @@ internal sealed class WebServer
         var due = Market.AcceptedOffers
             .Where(kv => now >= kv.Value.AcceptAtUnix && kv.Value.SettledAt <= 0)
             .Select(kv => kv.Key).ToList();
+        bool changed = false;
         if (due.Count > 0)
         {
             var rnd = new Random();
@@ -2843,6 +2908,7 @@ internal sealed class WebServer
                 {
                     _log.LogInformation("[Market] OFFER on trade {0} voided - listing gone by accept time", tradeId);
                     Market.AcceptedOffers.TryRemove(tradeId, out _);
+                    changed = true;
                     continue;
                 }
                 RealPlayer cp = card.Value;
@@ -2877,11 +2943,16 @@ internal sealed class WebServer
                 }
                 _log.LogInformation("[Market] OFFER ACCEPTED trade {0}: sent {1} (rating {2}) for {3} coins + card {4}",
                     tradeId, cp.Name, cp.Rating, offer.Bid, offer.OfferedItemId);
+                changed = true;
             }
         }
         foreach (var kv in Market.AcceptedOffers.ToList())
             if (kv.Value.SettledAt > 0 && !Market.LiveAt(kv.Key - Market.TradeIdBase, now))
+            {
                 Market.AcceptedOffers.TryRemove(kv.Key, out _);
+                changed = true;
+            }
+        if (changed) FutProfileStore.Mutate(_ => { });   // persist offer settlement across restarts
     }
 
     private static (int CurrentBid, int Offers) UserAuctionBids(Auction au, RealPlayer p, long now)
@@ -2904,57 +2975,48 @@ internal sealed class WebServer
         return ((int)bid, 0);
     }
 
-    private string TradePileEntryJson(Auction au, long now, Random rnd)
+    private string TradePileEntryJson(long itemId, Auction au, long now, Random rnd)
     {
         var tpData = ClubStore.Get();
         string item = null;
-        int curBid = au.CurrentBid;
-        bool hasBids = false;
-        switch (au.Kind)
+        bool isPlayer = false;
+        int pIdx = tpData.Inventory.FindIndex(c => c.ItemId == itemId);
+        if (pIdx >= 0)
         {
-            case "player":
+            item = BuildRealPlayerItem(rnd, tpData.Inventory[pIdx].Player, itemId, now, 3);
+            isPlayer = true;
+        }
+        else
+        {
+            var cos = tpData.Cosmetics.FirstOrDefault(c => c.ItemId == itemId);
+            if (cos.ItemId == itemId) item = ClubItems.BuildJson(cos, now, "forSale", 3);
+            else
             {
-                int idx = tpData.Inventory.FindIndex(c => c.ItemId == au.ItemId);
-                if (idx < 0) return null;
-                item = BuildRealPlayerItem(rnd, tpData.Inventory[idx].Player, au.ItemId, now, 3);
-                if (au.State == "active")
-                {
-                    var (cb, of) = UserAuctionBids(au, tpData.Inventory[idx].Player, now);
-                    curBid = cb;
-                    au.Offers = of;
-                }
-                hasBids = true;
-                break;
-            }
-            case "cosmetic":
-            {
-                var c = tpData.Cosmetics.FirstOrDefault(x => x.ItemId == au.ItemId);
-                if (c.ItemId == 0) return null;
-                item = ClubItems.BuildJson(c, now, "forSale", 3);
-                break;
-            }
-            case "consumable":
-            {
-                var c = tpData.Consumables.FirstOrDefault(x => x.ItemId == au.ItemId);
-                if (c.ItemId == 0) return null;
-                item = ConsumableItems.BuildJson(c, now, 3, "forSale");
-                break;
-            }
-            case "staff":
-            {
-                long mgrIdx = au.ItemId - ManagerItemIdBase;
-                if (mgrIdx >= 0 && mgrIdx < tpData.Managers.Count)
-                    item = BuildManagerItem(tpData.Managers[(int)mgrIdx], au.ItemId, now, 3);
+                var con = tpData.Consumables.FirstOrDefault(c => c.ItemId == itemId);
+                if (con.ItemId == itemId) item = ConsumableItems.BuildJson(con, now, 3, "forSale");
                 else
                 {
-                    long stfIdx = au.ItemId - StaffItemIdBase;
-                    if (stfIdx < 0 || stfIdx >= tpData.Staff.Count) return null;
-                    item = BuildStaffItem(tpData.Staff[(int)stfIdx], au.ItemId, now, 3);
+                    if (ManagerByGlobalId(itemId) is { } mgr && tpData.Managers.Contains(mgr))
+                        item = BuildManagerItem(mgr, itemId, now, 3);
+                    else if (StaffByGlobalId(itemId) is { } stf && tpData.Staff.Contains(stf))
+                        item = BuildStaffItem(stf, itemId, now, 3);
                 }
-                break;
             }
-            default: return null;
         }
+        if (item == null) return null;
+        if (au == null)
+            return "{\"tradeId\":0,\"itemData\":" + item +
+                ",\"tradeState\":null,\"buyNowPrice\":0,\"currentBid\":0,\"offers\":0,\"watched\":false," +
+                "\"bidState\":\"none\",\"startingBid\":0,\"confidenceValue\":0,\"expires\":-1," +
+                "\"sellerName\":\"\",\"seller\":0,\"tradeOwner\":true}";
+        int curBid = au.CurrentBid;
+        if (isPlayer && au.State == "active")
+        {
+            var (cb, of) = UserAuctionBids(au, tpData.Inventory[pIdx].Player, now);
+            curBid = cb;
+            au.Offers = of;
+        }
+        int offers = isPlayer ? au.Offers : 0;
         if (au.State == "sold")
             return "{\"tradeId\":" + au.TradeId + ",\"itemData\":" + item +
                 ",\"tradeState\":\"closed\",\"buyNowPrice\":" + au.BuyNowPrice +
@@ -2965,12 +3027,6 @@ internal sealed class WebServer
         bool live = remain > 0;
         string state = live ? "active" : "expired";
         long expiresOut = live ? remain : -1;
-        int offers = au.Offers;
-        if (!hasBids)
-        {
-            curBid = au.CurrentBid;
-            offers = 0;
-        }
         return "{\"tradeId\":" + au.TradeId + ",\"itemData\":" + item +
             ",\"tradeState\":\"" + state + "\",\"buyNowPrice\":" + au.BuyNowPrice +
             ",\"currentBid\":" + curBid + ",\"offers\":" + offers + ",\"watched\":false," +
@@ -3051,7 +3107,9 @@ internal sealed class WebServer
     private static List<ConsumableItem> AvailableConsumables()
     {
         var data = ClubStore.Get();
-        return data.Consumables.Where(c => !data.Listings.ContainsKey(c.ItemId)).ToList();
+        return data.Consumables
+            .Where(c => !data.Listings.ContainsKey(c.ItemId) && !data.TransferList.Contains(c.ItemId))
+            .ToList();
     }
 
     private static Func<ConsumableItem, bool> ConsumableTabFilter(string tab)
@@ -3093,20 +3151,85 @@ internal sealed class WebServer
             foreach (long tid in applyTo)
             {
                 int pi = data.Inventory.FindIndex(x => x.ItemId == tid);
-                if (pi < 0) continue;   // not an owned player (e.g. a manager) -> skip
-                int rating = data.Inventory[pi].Player.Rating;
-                if (!data.PlayerMods.TryGetValue(tid, out var mod) || mod == null)
+                if (pi >= 0)
                 {
-                    mod = new PlayerMod();
-                    data.PlayerMods[tid] = mod;
+                    int rating = data.Inventory[pi].Player.Rating;
+                    if (!data.PlayerMods.TryGetValue(tid, out var mod) || mod == null)
+                    {
+                        mod = new PlayerMod();
+                        data.PlayerMods[tid] = mod;
+                    }
+                    ApplyEffect(mod, rating, c);
+                    changed.Add(tid);
+                    continue;
                 }
-                ApplyEffect(mod, rating, c);
-                changed.Add(tid);
+                if (ManagerByGlobalId(tid) is { } mgr && data.Managers.Contains(mgr))
+                {
+                    if (!data.ManagerMods.TryGetValue(tid, out var mmod) || mmod == null)
+                    {
+                        mmod = new ManagerMod();
+                        data.ManagerMods[tid] = mmod;
+                    }
+                    if (ApplyManagerEffect(mmod, mgr, c, def))
+                        changed.Add(tid);
+                }
             }
         });
-        Console.WriteLine($"[FUT] applied consumable {resourceId} ({def.Category}/{def.Kind}) to {changed.Count} player(s)");
+        Console.WriteLine($"[FUT] applied consumable {resourceId} ({def.Category}/{def.Kind}) to {changed.Count} item(s)");
         return changed;
     }
+
+    private static bool ApplyManagerEffect(ManagerMod mod, Manager mgr, ConsumableItem c, ConsumableItems.ConsumableDef def)
+    {
+        if (string.Equals(c.ItemType, "managerLeagueModifier", StringComparison.OrdinalIgnoreCase))
+        {
+            int league = LeagueIdForLeagueModifier(c.SubType);
+            if (league <= 0) return false;
+            mod.LeagueModifier = league;
+            return true;
+        }
+        if (def.Category == "contract" && string.Equals(def.Kind, "Manager", StringComparison.OrdinalIgnoreCase))
+        {
+            int gain = mgr.Rating <= 64 ? def.Bronze : mgr.Rating <= 74 ? def.Silver : def.Gold;
+            if (gain <= 0) gain = Math.Max(0, def.Amount);
+            int cur = mod.Contract >= 0 ? mod.Contract : 7;
+            mod.Contract = Math.Min(99, cur + Math.Max(0, gain));
+            return true;
+        }
+        return false;
+    }
+
+    private static int LeagueIdForLeagueModifier(int subType) => subType switch
+    {
+        300 => 10,   // Denmark Superliga
+        301 => 4,    // Belgium Jupiler Pro League
+        302 => 7,    // Brazil Campeonato Brasileiro
+        303 => 56,   // Holland Eredivisie
+        304 => 13,   // England Premier League
+        305 => 14,   // England Championship
+        306 => 16,   // France Ligue 1
+        307 => 17,   // France Ligue 2
+        308 => 31,   // Germany 1. Bundesliga
+        309 => 32,   // Germany 2. Bundesliga
+        310 => 53,   // Italy Serie A
+        311 => 54,   // Italy Serie B
+        312 => 39,   // USA Major League Soccer
+        313 => 80,   // Norway Tippeligaen
+        314 => 50,   // Scotland Premier League
+        315 => 41,   // Spain Primera Division
+        316 => 42,   // Spain Segunda A
+        317 => 78,   // Sweden Allsvenskan
+        318 => 19,   // England League One
+        319 => 20,   // England League Two
+        320 => 76,   // Greece A'Ethniki
+        321 => 83,   // Rep. Ireland Airtricity League
+        322 => 67,   // Poland T-Mobile Ekstraklasa
+        323 => 65,   // Russia Premier League
+        324 => 61,   // Turkey Süper Lig
+        325 => 66,   // Austria tipp3-Bundesliga
+        326 => 111,  // Korea K League Classic
+        _ => 0,      // unnamed "League 100" placeholders -> leave the manager's league unchanged
+    };
 
     private static string AppliedItemsJson(long resourceId, List<long> changedIds)
     {
@@ -3118,9 +3241,17 @@ internal sealed class WebServer
         foreach (long tid in changedIds)
         {
             int pi = data.Inventory.FindIndex(x => x.ItemId == tid);
-            if (pi < 0) continue;
-            if (n++ > 0) sb.Append(',');
-            sb.Append(BuildRealPlayerItem(rnd, data.Inventory[pi].Player, tid, now, data.Inventory[pi].Pile));
+            if (pi >= 0)
+            {
+                if (n++ > 0) sb.Append(',');
+                sb.Append(BuildRealPlayerItem(rnd, data.Inventory[pi].Player, tid, now, data.Inventory[pi].Pile));
+                continue;
+            }
+            if (ManagerByGlobalId(tid) is { } mgr && data.Managers.Contains(mgr))
+            {
+                if (n++ > 0) sb.Append(',');
+                sb.Append(BuildManagerItem(mgr, tid, now, 6));
+            }
         }
         sb.Append(']');
         return "{\"success\":true,\"resourceId\":" + resourceId + ",\"itemData\":" + sb + "}";
@@ -3334,6 +3465,20 @@ internal sealed class WebServer
                 ApplyReport(mod, tid);                                                    // a sub can still be carded/hurt
                 benched++;
             }
+
+            var handled = new HashSet<long>(xi);
+            handled.UnionWith(bench);
+            foreach (var (tid, r) in reports)
+            {
+                if (handled.Contains(tid)) continue;
+                var mod = ModFor(tid);
+                if (mod == null) continue;
+                mod.Contract = Math.Max(0, (mod.Contract >= 0 ? mod.Contract : 7) - 1);
+                if (r.Fitness >= 0) mod.Fitness = r.Fitness;
+                if (mod.TrainingFlag > 0) { System.Array.Clear(mod.AttrBoost, 0, mod.AttrBoost.Length); mod.TrainingFlag = 0; }
+                ApplyReport(mod, tid);
+                played++;
+            }
         });
         Console.WriteLine($"[FUT] match consequences: {played} played, {benched} subs, {injuries} injuries, {bans} bans");
     }
@@ -3452,6 +3597,11 @@ internal sealed class WebServer
     {
         int league = leagueIdV >= 0 ? leagueIdV : m.LeagueId;
         int contract = contractV >= 0 ? contractV : 7;
+        if (ClubStore.Get().ManagerMods.TryGetValue(id, out var mm) && mm != null)
+        {
+            if (leagueIdV < 0 && mm.LeagueModifier > 0) league = mm.LeagueModifier;
+            if (contractV < 0 && mm.Contract >= 0) contract = mm.Contract;
+        }
         return "{\"id\":" + id + ",\"timestamp\":" + timestamp + ",\"formation\":\"f442\"," +
             "\"untradeable\":false,\"assetId\":" + m.ResourceId + ",\"rating\":" + m.Rating + "," +
             "\"itemType\":\"manager\",\"dream\":false,\"resourceId\":" + m.ResourceId + ",\"owners\":1," +
@@ -3469,12 +3619,15 @@ internal sealed class WebServer
 
     internal const long ManagerItemIdBase = 640_000L;
 
-    private static string ManagerItemsJson(int offset, int countLimit, long now, int pile, int nationFilter = -1, int leagueFilter = -1, string levelFilter = "")
+    private static string ManagerItemsJson(int offset, int countLimit, long now, int pile,
+        int nationFilter = -1, int leagueFilter = -1, string levelFilter = "")
     {
         var mData = ClubStore.Get();
         var page = mData.Managers
-            .Select((m, idx) => (m, idx))
-            .Where(t => !mData.Listings.ContainsKey(ManagerItemIdBase + t.idx))
+            .Select(m => (m, gidx: System.Array.IndexOf(Managers.All, m)))
+            .Where(t => t.gidx >= 0)
+            .Where(t => !mData.Listings.ContainsKey(ManagerItemIdBase + t.gidx)
+                && !mData.TransferList.Contains(ManagerItemIdBase + t.gidx))
             .Where(t => (nationFilter == -1 || t.m.NationId == nationFilter)
                 && (leagueFilter == -1 || t.m.LeagueId == leagueFilter)
                 && levelFilter switch
@@ -3489,7 +3642,7 @@ internal sealed class WebServer
         for (int i = 0; i < page.Length; i++)
         {
             if (i > 0) sb.Append(',');
-            sb.Append(BuildManagerItem(page[i].m, ManagerItemIdBase + page[i].idx, now, pile));
+            sb.Append(BuildManagerItem(page[i].m, ManagerItemIdBase + page[i].gidx, now, pile));
         }
         sb.Append(']');
         return sb.ToString();
@@ -3551,11 +3704,21 @@ internal sealed class WebServer
         if (typeFilter == null)
         {
             for (int i = 0; i < data.Managers.Count; i++)
-                if (!data.Listings.ContainsKey(ManagerItemIdBase + i))
-                    all.Add(BuildManagerItem(data.Managers[i], ManagerItemIdBase + i, now, pile));
+            {
+                int gidx = System.Array.IndexOf(Managers.All, data.Managers[i]);
+                if (gidx < 0) continue;
+                long id = ManagerItemIdBase + gidx;
+                if (!data.Listings.ContainsKey(id) && !data.TransferList.Contains(id))
+                    all.Add(BuildManagerItem(data.Managers[i], id, now, pile));
+            }
             for (int i = 0; i < data.Staff.Count; i++)
-                if (!data.Listings.ContainsKey(StaffItemIdBase + i))
-                    all.Add(BuildStaffItem(data.Staff[i], StaffItemIdBase + i, now, pile));
+            {
+                int gidx = System.Array.IndexOf(Staff.All, data.Staff[i]);
+                if (gidx < 0) continue;
+                long id = StaffItemIdBase + gidx;
+                if (!data.Listings.ContainsKey(id) && !data.TransferList.Contains(id))
+                    all.Add(BuildStaffItem(data.Staff[i], id, now, pile));
+            }
         }
         else
         {
@@ -3563,7 +3726,10 @@ internal sealed class WebServer
             {
                 var s = data.Staff[i];
                 if (!string.Equals(s.ItemType, typeFilter, StringComparison.OrdinalIgnoreCase)) continue;
-                if (data.Listings.ContainsKey(StaffItemIdBase + i)) continue;
+                int gidx = System.Array.IndexOf(Staff.All, s);
+                if (gidx < 0) continue;
+                long id = StaffItemIdBase + gidx;
+                if (data.Listings.ContainsKey(id) || data.TransferList.Contains(id)) continue;
                 bool levelOk = levelFilter switch
                 {
                     "bronze" => s.Rating < 65,
@@ -3572,7 +3738,7 @@ internal sealed class WebServer
                     _ => true,
                 };
                 if (!levelOk) continue;
-                all.Add(BuildStaffItem(s, StaffItemIdBase + i, now, pile));
+                all.Add(BuildStaffItem(s, id, now, pile));
             }
         }
         var page = all.Skip(offset).Take(countLimit);
@@ -3615,6 +3781,7 @@ internal sealed class WebServer
         var playersSb = new StringBuilder("[");
         long captainId = 0;
         int filled = 0;
+        int KitFor(int idx) => squad.KitNumbers.TryGetValue(idx, out int kn) ? kn : 0;
         for (int idx = 0; idx < slotCount; idx++)
         {
             if (idx > 0) playersSb.Append(',');
@@ -3631,14 +3798,14 @@ internal sealed class WebServer
 
             if (!has)
             {
-                playersSb.Append("{\"index\":" + idx + ",\"loyaltyBonus\":0,\"kitNumber\":0,\"chemistry\":0," +
+                playersSb.Append("{\"index\":" + idx + ",\"loyaltyBonus\":0,\"kitNumber\":" + KitFor(idx) + ",\"chemistry\":0," +
                                  "\"itemData\":{\"id\":0}}");
                 continue;
             }
 
             filled++;
             string item = BuildRealPlayerItem(rnd, player, itemId, now, 7);
-            playersSb.Append("{\"index\":" + idx + ",\"loyaltyBonus\":1,\"kitNumber\":0,\"chemistry\":10,\"itemData\":" + item + "}");
+            playersSb.Append("{\"index\":" + idx + ",\"loyaltyBonus\":1,\"kitNumber\":" + KitFor(idx) + ",\"chemistry\":10,\"itemData\":" + item + "}");
             if (captainId == 0 || player.Position == "ST") captainId = itemId;
         }
         playersSb.Append(']');

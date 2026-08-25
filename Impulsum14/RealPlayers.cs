@@ -27,6 +27,7 @@ internal sealed class Squad
     public int StarRating { get; set; }
     public long ManagerId { get; set; } = 0;
     public System.Collections.Generic.Dictionary<int, long> Slots { get; set; } = new();
+    public System.Collections.Generic.Dictionary<int, int> KitNumbers { get; set; } = new();
 }
 
 internal static class RealPlayers
