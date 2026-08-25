@@ -148,7 +148,7 @@ public class GameService
             CopyDirectory(dir, Path.Combine(targetDir, Path.GetFileName(dir)));
     }
 
-    public async Task<ProcessResult> LaunchGameAsync(string gamePath)
+    public Task<ProcessResult> LaunchGameAsync(string gamePath)
     {
         var result = new ProcessResult();
 
@@ -156,7 +156,7 @@ public class GameService
         {
             result.Success = false;
             result.ErrorMessage = "FIFA 14 not found at the specified path.";
-            return result;
+            return Task.FromResult(result);
         }
 
         var exePath = GetGameExePath(gamePath);
@@ -164,12 +164,12 @@ public class GameService
         {
             result.Success = false;
             result.ErrorMessage = "fifa14.exe was not found at " + exePath;
-            return result;
+            return Task.FromResult(result);
         }
 
         try
         {
-            using var gameProcess = Process.Start(new ProcessStartInfo
+            var gameProcess = Process.Start(new ProcessStartInfo
             {
                 FileName = exePath,
                 WorkingDirectory = gamePath,
@@ -181,24 +181,19 @@ public class GameService
             {
                 result.Success = false;
                 result.ErrorMessage = "Failed to start fifa14.exe.";
-                return result;
+                return Task.FromResult(result);
             }
 
             result.Success = true;
             result.ProcessId = gameProcess.Id;
-
-            while (!gameProcess.HasExited)
-            {
-                await Task.Delay(250);
-            }
+            return Task.FromResult(result);
         }
         catch (Exception ex)
         {
             result.Success = false;
             result.ErrorMessage = ex.Message;
+            return Task.FromResult(result);
         }
-
-        return result;
     }
 
     private static Process? FindGameProcess(string gamePath)

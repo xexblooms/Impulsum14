@@ -683,7 +683,7 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
             if (sim >= buy)
             {
                 currentBid = buy; offers = 0;
-                bidState = "none"; tradeState = "closed"; expiresOut = 0;   // bot BIN'd it
+                bidState = "none"; tradeState = "closed"; expiresOut = -1;   // bot BIN'd it
             }
             else
             {
@@ -695,7 +695,7 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         else if (bought)
         {
             currentBid = buy; offers = 0; bidState = "none";
-            tradeState = "closed"; expiresOut = 0;
+            tradeState = "closed"; expiresOut = -1;
         }
         else
         {
@@ -703,7 +703,7 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
             currentBid = effStart; offers = 0;
             bidState = "none";
             tradeState = hasBids ? "closed" : "expired";
-            expiresOut = 0;
+            expiresOut = -1;
         }
 
         string seller = SellerFor(cg, cyc.k);
@@ -955,7 +955,7 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
             if (sim >= buy)
             {
                 currentBid = buy; offers = 0;
-                bidState = "none"; tradeState = "closed"; expiresOut = 0;   // bot BIN'd it
+                bidState = "none"; tradeState = "closed"; expiresOut = -1;   // bot BIN'd it
             }
             else
             {
@@ -967,7 +967,7 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         else if (bought)
         {
             currentBid = buy; offers = 0; bidState = "none";
-            tradeState = "closed"; expiresOut = 0;
+            tradeState = "closed"; expiresOut = -1;
         }
         else
         {
@@ -975,7 +975,7 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
             currentBid = effStart; offers = 0;
             bidState = "none";
             tradeState = hasBids ? "closed" : "expired";
-            expiresOut = 0;
+            expiresOut = -1;
         }
 
         string seller = SellerFor(eg, cyc.k);
@@ -1226,7 +1226,7 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
             if (sim >= buy)
             {
                 currentBid = buy; offers = 0;
-                bidState = "none"; tradeState = "closed"; expiresOut = 0;   // bot BIN'd it
+                bidState = "none"; tradeState = "closed"; expiresOut = -1;   // bot BIN'd it
             }
             else
             {
@@ -1238,7 +1238,7 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
         else if (bought)
         {
             currentBid = buy; offers = 0; bidState = "none";
-            tradeState = "closed"; expiresOut = 0;
+            tradeState = "closed"; expiresOut = -1;
         }
         else
         {
@@ -1246,7 +1246,7 @@ long n = Math.Min(finalN, (elapsed - firstDelay) / bidGap + 1);
             currentBid = effStart; offers = 0;
             bidState = "none";
             tradeState = hasBids ? "closed" : "expired";
-            expiresOut = 0;
+            expiresOut = -1;
         }
 
         string seller = SellerFor(fg, cyc.k);
@@ -1529,7 +1529,8 @@ string seller = SellerFor(g, cyc.k);
             if (cyc.local < cyc.dur) continue;   // still live
             var card = Cards[Locate(g)];
             var (start, buy) = Price(card, g, cyc.k);
-            var (_, _, _, finalBid) = SimBids(card, g, cyc.k, cyc.dur, start, buy, cyc.dur);
+            long effStart = EffStart(card, g, cyc.k, cyc.dur, start, buy);
+            var (_, _, _, finalBid) = SimBids(card, g, cyc.k, cyc.dur, (int)effStart, buy, cyc.dur);
             outs.Add(new BidOutcome(kv.Key, card, start, buy, kv.Value, kv.Value >= finalBid));
         }
         return outs;
@@ -1548,7 +1549,8 @@ string seller = SellerFor(g, cyc.k);
             if (cyc.local >= cyc.dur) continue;   // ended -> settled on next poll
             var card = Cards[Locate(g)];
             var (start, buy) = Price(card, g, cyc.k);
-            var (_, sim, _, _) = SimBids(card, g, cyc.k, cyc.dur, start, buy, cyc.local);
+            long effStart = EffStart(card, g, cyc.k, cyc.dur, start, buy);
+            var (_, sim, _, _) = SimBids(card, g, cyc.k, cyc.dur, (int)effStart, buy, cyc.local);
             if (kv.Value >= sim) winning++; else outbid++;
         }
         foreach (var kv in AcceptedOffers) winning++;   // accepted offers count as wins in the watchlist
@@ -2324,7 +2326,7 @@ internal static (long CurrentBid, int Offers, string BidState) AuctionState(long
             else if (sim >= buy)
             {
                 currentBid = buy; offers = 0;
-                bidState = "none"; tradeState = "closed"; expiresOut = 0;   // bot BIN'd it
+                bidState = "none"; tradeState = "closed"; expiresOut = -1;   // bot BIN'd it
             }
             else
             {
@@ -2341,22 +2343,23 @@ internal static (long CurrentBid, int Offers, string BidState) AuctionState(long
             {
                 var (_, _, _, _) = SimBids(card, g, cyc.k, cyc.dur, (int)effStart, buy, cyc.dur);
                 currentBid = myOffer.Bid; offers = 1; bidState = "highest";
-                tradeState = "closed"; expiresOut = 0;   // accepted offer settled - reads as a won purchase
+                tradeState = "closed"; expiresOut = -1;   // accepted offer settled - reads as a won purchase
             }
             else
             {
                 currentBid = buy; offers = 0; bidState = "none";
-                tradeState = "closed"; expiresOut = 0;
+                tradeState = "closed"; expiresOut = -1;
             }
         }
         else
         {
-            var (hasBids, _, _, _) = SimBids(card, g, cyc.k, cyc.dur, (int)effStart, buy, cyc.dur);
+            var (_, _, _, finalBid) = SimBids(card, g, cyc.k, cyc.dur, (int)effStart, buy, cyc.dur);
+            bool won = myBid > 0 && myBid >= finalBid;
             currentBid = Math.Max(myBid, effStart);
             offers = 0;
             bidState = "none";
-            tradeState = hasBids || myBid > 0 ? "closed" : "expired";
-            expiresOut = 0;
+            tradeState = won ? "closed" : "expired";
+            expiresOut = -1;
         }
 
         string seller = SellerFor(g, cyc.k);

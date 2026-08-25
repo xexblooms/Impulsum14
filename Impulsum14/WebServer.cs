@@ -2832,7 +2832,6 @@ internal sealed class WebServer
 
     private void SettleExpiredListings(long now)
     {
-        var returned = new List<(long ItemId, string Name, int Rating)>();
         var sold = new List<Auction>();
         ClubStore.Mutate(data =>
         {
@@ -2848,31 +2847,11 @@ internal sealed class WebServer
                     sold.Add(au);
                     continue;
                 }
-                au.State = "expired";
-                data.Listings.Remove(kv.Key);
-                data.TransferList.Remove(kv.Key);
-                string name; int rating;
-                if (au.Kind == "player")
-                {
-                    int idx = data.Inventory.FindIndex(c => c.ItemId == kv.Key);
-                    if (idx < 0) continue;
-                    var p = data.Inventory[idx].Player;
-                    data.Inventory[idx] = new ClubItem(kv.Key, p, 6);
-                    name = p.Name; rating = p.Rating;
-                }
-                else
-                {
-                    name = ListedItemName(data, au);
-                    rating = ListedItemRating(data, au);
-                }
-                returned.Add((kv.Key, name, rating));
+                au.State = "expired";   // stays in the trade pile marked "expired" until the user clears it
+                _log.LogInformation("[Market] listing {0} ({1}) expired - awaiting pick-up in the transfer list",
+                    au.TradeId, ListedItemName(data, au));
             }
         });
-        foreach (var (itemId, name, rating) in returned)
-            _log.LogInformation("[Market] listing {0} ({1}) expired - card returned to the club",
-                itemId, name);
-        if (returned.Count > 1)
-            _log.LogInformation("[Market] {0} expired listings returned to the club", returned.Count);
         if (sold.Count == 0) return;
 
         long totalNet = 0;
@@ -3030,8 +3009,9 @@ internal sealed class WebServer
         return "{\"tradeId\":" + au.TradeId + ",\"itemData\":" + item +
             ",\"tradeState\":\"" + state + "\",\"buyNowPrice\":" + au.BuyNowPrice +
             ",\"currentBid\":" + curBid + ",\"offers\":" + offers + ",\"watched\":false," +
-            "\"bidState\":\"none\",\"startingBid\":" + au.StartingBid + ",\"confidenceValue\":0," +
-            "\"expires\":" + expiresOut + ",\"sellerName\":\"\",\"seller\":0,\"tradeOwner\":true}";
+            "\"bidState\":\"none\",\"startingBid\":" + au.StartingBid + ",\"confidenceValue\":100," +
+            "\"expires\":" + expiresOut + ",\"sellerName\":\"\",\"sellerEstablished\":0,\"sellerId\":0," +
+            "\"tradeOwner\":true,\"tradeIdStr\":\"" + au.TradeId + "\",\"lastSalePrice\":0,\"coinsProcessed\":false}";
     }
 
     internal static string BuildRealPlayerItem(Random rnd, RealPlayer player, long id, long timestamp, int pile,
